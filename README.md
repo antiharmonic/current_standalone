@@ -4,6 +4,11 @@ This is the standalone version that works locally. There is also a web-based ver
 
 ### Installation
 - database setup
+  - todo
+- symlink / $PATH
 - data import
-- symlink / path
+  - once installed run `xargs -0 -n 1 current push --book < <(tr \\n \\0 <books.txt)`
+
+#### Notes
+This has only been tested on Ubuntu Linux.
 
