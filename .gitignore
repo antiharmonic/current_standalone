@@ -1,0 +1,5 @@
+*
+!*.py
+!config.example.ini
+!README.md
+!.gitignore
