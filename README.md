@@ -5,6 +5,7 @@ This is the standalone version that works locally. There is also a web-based ver
 ### Installation
 - database setup
   - todo
+- copy config.example.ini to config.ini and fill the configuration in.
 - symlink / $PATH
 - data import
   - once installed run `xargs -0 -n 1 current push --book < <(tr \\n \\0 <books.txt)`
