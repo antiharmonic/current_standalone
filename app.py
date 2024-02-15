@@ -37,8 +37,9 @@ type_unit = {
 p = inflect.engine()
 
 def format_media(rows):
-  rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", m['genre'] or ""] for m in rows]
-  rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Genre"])
+  rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", reason_lookup.get(m.get('reason', None), ""), m['genre'] or "", m.get('estimated_length', "") or "", m.get('deferred', '') or ''] for m in rows]
+
+  rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Reason", "Genre", "Length", "Deferred"])
   tbl = Texttable()
   tbl.add_rows(rows)
   tbl.set_max_width(0)
@@ -98,6 +99,9 @@ def add_types_to_subparser(sp, required=True, by_id=False):
 def add_genre_to_subparser(sp):
   sp.add_argument('--genre', type=str)
 
+def add_reason_to_subparser(sp):
+  sp.add_argument('--reason', choices=list(reasons.keys()))
+
 def assert_single_record(title, type, pred):
   sql = "select count(*) as count from current_media" + pred
   res = db.query(sql, title=title, type=type).first()
@@ -131,7 +135,7 @@ def push_media(args):
   if total >= 4 and args.priority:
     print(f"WARNING: Already have {total} {p.plural(mlookup[args.type].lower())}")
   print(f"Adding {mlookup[args.type]} \"{title}\".")
-  db.query("insert into current_media (title, type, referrer, priority, weight, genre) values (:title, :type, :referrer, :priority, :weight, :genre) on conflict (title, type) do update set weight = current_media.weight + :weight", title=title, type=args.type, referrer=args.referrer, priority=args.priority, weight=args.weight, genre=args.genre)
+  db.query("insert into current_media (title, type, referrer, priority, weight, genre, estimated_length, reason) values (:title, :type, :referrer, :priority, :weight, :genre, :hours, :reason) on conflict (title, type) do update set weight = current_media.weight + :weight", title=title, type=args.type, referrer=args.referrer, priority=args.priority, weight=args.weight, genre=args.genre, hours=args.hours, reason=reasons.get(args.reason, None))
 
 
 def update_media(args):
@@ -145,16 +149,23 @@ def update_media(args):
     updates.append("set referrer = :referrer")
   if args.weight:
     updates.append("set weight = :weight")
+  if args.deferred:
+    updates.append("set deferred = now()")
+  if args.reason:
+    updates.append("set reason = :reason")
+  if not updates:
+    print("No changes processed, refusing database update")
+    return
   sql += ", ".join(updates)
   sql += sql_pred
   #print(sql)
-  db.query(sql, id=id, title=title, type=type, referrer=args.referrer, genre=args.genre, weight=args.weight)
+  db.query(sql, id=id, title=title, type=type, referrer=args.referrer, genre=args.genre, weight=args.weight, reason=reasons[args.reason])
 
-  
+
 def random_media(args):
   # weighted random so that e.g. a movie i've pushed several times or really want to watch and manually overrode will be more likely to come
   # https://stackoverflow.com/questions/1398113/how-to-select-one-row-randomly-taking-into-account-a-weight
-  sql = "select id, title, weight, date_added, started, removed, referrer, genre, type, -log(random())/weight as priority from current_media where removed is null";
+  sql = "select id, title, weight, date_added, started, removed, referrer, genre, type, -log(random())/weight as priority from current_media where removed is null and deferred is null";
   if args.type:
     sql += " and type = :type"
   if args.genre:
@@ -247,7 +258,7 @@ def recently_added(args):
 
 
 def count_base(args):
-  sql = "select count(*) as total from current_media where removed is null"
+  sql = "select count(*) as total from current_media where removed is null and deferred is null"
   if args.type:
     sql += " and type = :type"
   if args.priority:
@@ -260,21 +271,38 @@ def count_media(args):
 
 
 def list_media(args):
-  sql = "select * from current_media"
+  sql = "select * from current_media where deferred is null"
   if args.type:
-    sql += " where type = :type"
+    sql += " and type = :type"
   if args.genre:
     sql += " and lower(genre) like '%' || lower(:genre) || '%'"
-  #TODO
-  sql += " order by title"
-  rows = db.query(sql, type=args.type, genre=args.genre).as_dict()
+  if args.reason:
+    sql += " and reason = :reason"
+  if args.todo:
+    sql += " and removed is null"
+  if args.order:
+    # TODO get column names, ensure args.order is 1 or 2 words, 1 word is column name, 2nd word is asc or desc. for now doesn't really matter.
+    # but sqli bad mmk
+    cols = db.query("SELECT lower(column_name) as column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name   = 'current_media'").all()
+    cols = [c.column_name for c in cols]
+    order = args.order.split(" ")
+    order_by = order[0].lower()
+    order_sort = "asc"
+    if len(order) > 1:
+      order_sort = order[1].lower()
+    if order_by in cols and order_sort in ("asc", "desc"):
+      sql += f" order by {order_by} {order_sort}"
+  else:
+    sql += " order by title"
+
+  rows = db.query(sql, type=args.type, genre=args.genre, reason=reasons.get(args.reason, None)).as_dict()
   if len(rows) <= 10 or args.pager == False:
     print(format_media(rows))
   else:
     pydoc.pager(format_media(rows))
 
 def top_media(args):
-  sql = "select * from current_media where priority = true and removed is null "
+  sql = "select * from current_media where priority = true and removed is null and deferred is null"
   if args.type:
     sql += " and type = :type"
   #TODO
@@ -316,11 +344,19 @@ except Exception as e:
   print(f"Unable to connect to the database: {e}")
   exit()
 
+# get default/config/command values this will have to change in the api version probably i.e. just fail at the post and the user/command pulls from the same pkg or something
+# maybe should use a bidict for this instead...
 mt = db.query("select id, name from media_type").as_dict()
 _mtype = {m['name'].lower(): m['id'] for m in mt}
 mlookup = {m['id']: m['name'] for m in mt}
+
+rq = db.query("select id, command from media_reason").as_dict()
+reasons = {r['command']: r['id'] for r in rq}
+reason_lookup = {r['id']: r['command'] for r in rq}
 #_mtype = {'game': 0, 'movie': 1, 'show': 3, 'book': 5}
 #print(_mtype)
+
+
 
 # parse args
 parser = argparse.ArgumentParser(description="Current media")
@@ -334,7 +370,10 @@ push_parser.add_argument('--referrer')
 push_parser.add_argument('--priority', action='store_true')
 push_parser.add_argument('--top', dest='priority', action='store_true')
 push_parser.add_argument('--genre')
+push_parser.add_argument('--hours', '--pages', '--length', dest='hours', type=float) #refactor? i.e. rename hours everywhere to length for code clarity?
+push_parser.add_argument('--deferred', '--defer', action='store_true')
 add_types_to_subparser(push_parser)
+add_reason_to_subparser(push_parser)
 push_parser.set_defaults(func=push_media)
 
 pop_parser = subparsers.add_parser('pop')
@@ -350,6 +389,8 @@ update_parser.add_argument('title', nargs='+')
 update_parser.add_argument('--weight')
 update_parser.add_argument('--referrer')
 update_parser.add_argument('--genre')
+update_parser.add_argument('--deferred', action='store_true')
+add_reason_to_subparser(update_parser)
 group = add_types_to_subparser(update_parser, by_id=True)
 update_parser.set_defaults(func=update_media)
 
@@ -401,8 +442,11 @@ recent_parser.set_defaults(func=recently_added)
 
 list_parser = subparsers.add_parser('list')
 list_parser.add_argument('--no-pager', action='store_false', dest='pager')
+list_parser.add_argument('--order')
+list_parser.add_argument('--todo', '--not-removed', action='store_true')
 add_types_to_subparser(list_parser)
 add_genre_to_subparser(list_parser)
+add_reason_to_subparser(list_parser)
 #TODO add sort opt
 #list_parser.add_argument('--sort', )
 list_parser.set_defaults(func=list_media)
