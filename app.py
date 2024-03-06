@@ -162,7 +162,7 @@ def update_media(args):
   sql += ", ".join(updates)
   sql += sql_pred
   #print(sql)
-  db.query(sql, id=id, title=title, type=type, referrer=args.referrer, genre=args.genre, weight=args.weight, reason=reasons[args.reason])
+  db.query(sql, id=id, title=title, type=type, referrer=args.referrer, genre=args.genre, weight=args.weight, reason=reasons.get(args.reason, None))
 
 
 def random_media(args):
