@@ -36,14 +36,17 @@ type_unit = {
 
 p = inflect.engine()
 
-def format_media(rows):
-  rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", reason_lookup.get(m.get('reason', None), ""), m['genre'] or "", m.get('estimated_length', "") or "", m.get('deferred', '') or ''] for m in rows]
+def format_media(rows, format='table'):
+  if format == 'titles':
+    return "\n".join((r['title'] for r in rows))
+  else:
+    rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", reason_lookup.get(m.get('reason', None), ""), m['genre'] or "", m.get('estimated_length', "") or "", m.get('deferred', '') or ''] for m in rows]
 
-  rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Reason", "Genre", "Length", "Deferred"])
-  tbl = Texttable()
-  tbl.add_rows(rows)
-  tbl.set_max_width(0)
-  return tbl.draw()
+    rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Reason", "Genre", "Length", "Deferred"])
+    tbl = Texttable()
+    tbl.add_rows(rows)
+    tbl.set_max_width(0)
+    return tbl.draw()
 
 
 def argDateType(d):
@@ -263,7 +266,9 @@ def count_base(args):
     sql += " and type = :type"
   if args.priority:
     sql += " and priority = True"
-  return db.query(sql, type=args.type).first()['total']
+  if args.reason:
+    sql += " and reason = :reason"
+  return db.query(sql, type=args.type, reason=reasons.get(args.reason, None)).first()['total']
 
 def count_media(args):
   total = count_base(args)
@@ -296,10 +301,13 @@ def list_media(args):
     sql += " order by title"
 
   rows = db.query(sql, type=args.type, genre=args.genre, reason=reasons.get(args.reason, None)).as_dict()
-  if len(rows) <= 10 or args.pager == False:
-    print(format_media(rows))
+  if args.format == 'titles':
+    print(format_media(rows, args.format))
   else:
-    pydoc.pager(format_media(rows))
+    if len(rows) <= 10 or args.pager == False:
+      print(format_media(rows))
+    else:
+      pydoc.pager(format_media(rows))
 
 def top_media(args):
   sql = "select * from current_media where priority = true and removed is null and deferred is null"
@@ -327,6 +335,15 @@ def downgrade_media(args):
 
 def upgrade_media(args):
   prioritize_media(args, True)
+
+
+def started_media(args):
+  sql = "select * from current_media where started is not null and removed is null and deferred is null"
+  if args.type :
+    sql += " and type = :type"
+  sql += " order by started"
+  rows = db.query(sql, type=args.type).as_dict()
+  print(format_media(rows))
 
 
 # init
@@ -413,7 +430,7 @@ add_types_to_subparser(random_parser, False)
 add_genre_to_subparser(random_parser)
 random_parser.set_defaults(func=random_media)
 
-search_parser = subparsers.add_parser('search')
+search_parser = subparsers.add_parser('search', aliases=['find'])
 #search_parser.add_argument('title', nargs='+')
 subparser_uses_title_or_id(search_parser)
 add_types_to_subparser(search_parser, False)
@@ -423,6 +440,7 @@ count_parser = subparsers.add_parser('count')
 count_parser.add_argument('--priority', action='store_true')
 count_parser.add_argument('--top', dest='priority', action='store_true')
 add_types_to_subparser(count_parser, False)
+add_reason_to_subparser(count_parser)
 count_parser.set_defaults(func=count_media)
 
 downgrade_parser = subparsers.add_parser('downgrade')
@@ -441,6 +459,7 @@ add_types_to_subparser(recent_parser, False)
 recent_parser.set_defaults(func=recently_added)
 
 list_parser = subparsers.add_parser('list')
+list_parser.add_argument('--format', default='table', choices=['table', 'titles'])
 list_parser.add_argument('--no-pager', action='store_false', dest='pager')
 list_parser.add_argument('--order')
 list_parser.add_argument('--todo', '--not-removed', action='store_true')
@@ -454,6 +473,10 @@ list_parser.set_defaults(func=list_media)
 priority_parser = subparsers.add_parser('top', aliases=['priority'])
 add_types_to_subparser(priority_parser, False)
 priority_parser.set_defaults(func=top_media)
+
+started_parser = subparsers.add_parser('started')
+add_types_to_subparser(started_parser, False)
+started_parser.set_defaults(func=started_media)
 
 argcomplete.autocomplete(parser)
 args = parser.parse_args()
