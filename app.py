@@ -208,7 +208,7 @@ def remove_media_func(args, remove=False):
     sql = "insert into media (title, subsection, begin_date, end_date, media_type, length, length_unit, from_current_media_id, music_theme_url) values (:title, :subsection, :begin, now() at time zone 'America/Chicago', :type, :length, :unit, :id, :theme) returning *"
     # todo update music_theme_title here or? maybe add some background job to check null theme_titles where theme_urls or idk
     try:
-      res = db.query(sql, title=data['title'], begin=data['started'], type=data['type'], length=data['estimated_length'], unit=type_unit[str(data['type'])], id=data['id'], subsection=args.subsection, theme=(args.theme or data['music_theme_url']).as_dict()[0]
+      res = db.query(sql, title=data['title'], begin=data['started'], type=data['type'], length=data['estimated_length'], unit=type_unit[str(data['type'])], id=data['id'], subsection=args.subsection, theme=(args.theme or data['music_theme_url'])).as_dict()[0]
     except Exception as e:
       print(f"Unable to remove {data.title} from current media list: {e}")
       exit()
