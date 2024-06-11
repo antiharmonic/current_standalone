@@ -40,9 +40,9 @@ def format_media(rows, format='table'):
   if format == 'titles':
     return "\n".join((r['title'] for r in rows))
   else:
-    rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", reason_lookup.get(m.get('reason', None), ""), m['genre'] or "", m.get('estimated_length', "") or "", m.get('deferred', '') or ''] for m in rows]
+    rows = [[m['id'], m['title'], mlookup[m['type']], m['weight'], m['date_added'], m['started'] or "", m['removed'] or "", "Yes" if m['priority'] else "", m['referrer'] or "", reason_lookup.get(m.get('reason', None), ""), m['genre'] or "", m.get('estimated_length', "") or "", m['music_theme_url'] or "", m.get('deferred', '') or ''] for m in rows]
 
-    rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Reason", "Genre", "Length", "Deferred"])
+    rows.insert(0, ["ID", "Title", "Type", "Weight", "Date Added", "Started", "Removed", "Priority?", "Referrer", "Reason", "Genre", "Length", "Theme", "Deferred"])
     tbl = Texttable()
     tbl.add_rows(rows)
     tbl.set_max_width(0)
@@ -99,6 +99,9 @@ def add_types_to_subparser(sp, required=True, by_id=False):
     exclusive_media.add_argument('--by-id', dest='id', action='store_true')
   return exclusive_media
 
+def add_theme_to_subparser(sp):
+  sp.add_argument('--theme', type=str)
+
 def add_genre_to_subparser(sp):
   sp.add_argument('--genre', type=str)
 
@@ -134,11 +137,11 @@ def parse_title_id(args, title_bind=":title"):
 def push_media(args):
 #  print(args)
   title = ' '.join(args.title)
-  total = count_base(args)
+  total = count_base(args, True)
   if total >= 4 and args.priority:
     print(f"WARNING: Already have {total} {p.plural(mlookup[args.type].lower())}")
   print(f"Adding {mlookup[args.type]} \"{title}\".")
-  db.query("insert into current_media (title, type, referrer, priority, weight, genre, estimated_length, reason) values (:title, :type, :referrer, :priority, :weight, :genre, :hours, :reason) on conflict (title, type) do update set weight = current_media.weight + :weight", title=title, type=args.type, referrer=args.referrer, priority=args.priority, weight=args.weight, genre=args.genre, hours=args.hours, reason=reasons.get(args.reason, None))
+  db.query("insert into current_media (title, type, referrer, priority, weight, genre, estimated_length, reason, music_theme_url) values (:title, :type, :referrer, :priority, :weight, :genre, :hours, :reason, :theme) on conflict (title, type) do update set weight = current_media.weight + :weight", title=title, type=args.type, referrer=args.referrer, priority=args.priority, weight=args.weight, genre=args.genre, hours=args.hours, reason=reasons.get(args.reason, None), theme=args.theme)
 
 
 def update_media(args):
@@ -156,13 +159,17 @@ def update_media(args):
     updates.append("set deferred = now()")
   if args.reason:
     updates.append("set reason = :reason")
+  if args.length:
+    updates.append("set estimated_length = :length")
+  if args.theme:
+    updates.append("set music_theme_url = :theme")
   if not updates:
     print("No changes processed, refusing database update")
     return
   sql += ", ".join(updates)
   sql += sql_pred
   #print(sql)
-  db.query(sql, id=id, title=title, type=type, referrer=args.referrer, genre=args.genre, weight=args.weight, reason=reasons.get(args.reason, None))
+  db.query(sql, id=id, title=title, type=type, length=args.length, referrer=args.referrer, genre=args.genre, weight=args.weight, reason=reasons.get(args.reason, None), theme=args.theme)
 
 
 def random_media(args):
@@ -198,18 +205,22 @@ def remove_media_func(args, remove=False):
   if data['started'] is None:
     data['started'] = data['now']
   if remove == False:
-    sql = "insert into media (title, subsection, begin_date, end_date, media_type, length_unit, from_current_media_id) values (:title, :subsection, :begin, now() at time zone 'America/Chicago', :type, :unit, :id) returning *"
+    sql = "insert into media (title, subsection, begin_date, end_date, media_type, length, length_unit, from_current_media_id, music_theme_url) values (:title, :subsection, :begin, now() at time zone 'America/Chicago', :type, :length, :unit, :id, :theme) returning *"
+    # todo update music_theme_title here or? maybe add some background job to check null theme_titles where theme_urls or idk
     try:
-      res = db.query(sql, title=data['title'], begin=data['started'], type=data['type'], unit=type_unit[str(data['type'])], id=data['id'], subsection=args.subsection).as_dict()[0]
+      res = db.query(sql, title=data['title'], begin=data['started'], type=data['type'], length=data['estimated_length'], unit=type_unit[str(data['type'])], id=data['id'], subsection=args.subsection, theme=(args.theme or data['music_theme_url']).as_dict()[0]
     except Exception as e:
       print(f"Unable to remove {data.title} from current media list: {e}")
       exit()
-  sql = "update current_media set removed = now() at time zone 'America/Chicago' where id = :id"
+  sql = "update current_media "
+  if args.theme:
+    sql += "set music_theme_url = :theme, "
+  sql += "set removed = now() at time zone 'America/Chicago' where id = :id"
   if remove == False:
     print(f"Removed {data['title']} and added to table media as {res['id']}: {res['title']}")
   else:
     print(f"Removed {data['title']}.")
-  db.query(sql, id=data['id'])
+  db.query(sql, id=data['id'], theme=args.theme)
 
 
 def pop_media(args):
@@ -260,14 +271,15 @@ def recently_added(args):
   print(format_media(rows))
 
 
-def count_base(args):
+def count_base(args, total=False):
   sql = "select count(*) as total from current_media where removed is null and deferred is null"
   if args.type:
     sql += " and type = :type"
-  if args.priority:
-    sql += " and priority = True"
-  if args.reason:
-    sql += " and reason = :reason"
+  if not total:
+    if args.priority:
+      sql += " and priority = True"
+    if args.reason:
+      sql += " and reason = :reason"
   return db.query(sql, type=args.type, reason=reasons.get(args.reason, None)).first()['total']
 
 def count_media(args):
@@ -391,12 +403,14 @@ push_parser.add_argument('--hours', '--pages', '--length', dest='hours', type=fl
 push_parser.add_argument('--deferred', '--defer', action='store_true')
 add_types_to_subparser(push_parser)
 add_reason_to_subparser(push_parser)
+add_theme_to_subparser(push_parser)
 push_parser.set_defaults(func=push_media)
 
 pop_parser = subparsers.add_parser('pop')
 pop_parser.add_argument('title', nargs='+')
 pop_parser.add_argument('--rename', type=str)
 pop_parser.add_argument('--subsection', type=str, default='')
+add_theme_to_subparser(pop_parser)
 group = add_types_to_subparser(pop_parser, by_id=True)
 # REMOVE group.add_argument('--by-id', dest='id', action='store_true')
 pop_parser.set_defaults(func=pop_media)
@@ -407,6 +421,8 @@ update_parser.add_argument('--weight')
 update_parser.add_argument('--referrer')
 update_parser.add_argument('--genre')
 update_parser.add_argument('--deferred', action='store_true')
+update_parser.add_argument('--length', type=int)
+add_theme_to_subparser(update_parser)
 add_reason_to_subparser(update_parser)
 group = add_types_to_subparser(update_parser, by_id=True)
 update_parser.set_defaults(func=update_media)
@@ -453,7 +469,7 @@ upgrade_parser.add_argument('title', nargs='+')
 group = add_types_to_subparser(upgrade_parser, by_id=True)
 upgrade_parser.set_defaults(func=upgrade_media)
 
-recent_parser = subparsers.add_parser('recent')
+recent_parser = subparsers.add_parser('recent', aliases=['latest'])
 recent_parser.add_argument('--limit', type=int, default=10)
 add_types_to_subparser(recent_parser, False)
 recent_parser.set_defaults(func=recently_added)
